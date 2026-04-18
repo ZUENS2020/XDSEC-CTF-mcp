@@ -434,6 +434,7 @@ Usage:
   node xdctf_automation.mjs challenges list --game-id N [--page 1 --page-size 200]
   node xdctf_automation.mjs challenges get --game-id N --challenge-id N
   node xdctf_automation.mjs challenges description --game-id N --challenge-id N
+  node xdctf_automation.mjs challenges hints --game-id N --challenge-id N
   node xdctf_automation.mjs files list --game-id N --challenge-id N [--folder F] [--all]
   node xdctf_automation.mjs files download --game-id N --challenge-id N [--all-files|--file NAME --folder F] [--dest attachments] [--all]
   node xdctf_automation.mjs instance status|env|start|renew|extend|stop|shutdown|endpoint --game-id N --challenge-id N [--wsrx-log PATH]
@@ -536,6 +537,21 @@ async function main() {
         found: true,
         field: picked.field,
         description: picked.text,
+      });
+      return;
+    }
+
+    if (scope === 'challenges' && action === 'hints') {
+      await authIfNeeded();
+      const gameId = num(mustOpt(options, 'game-id'), 'game-id');
+      const challengeId = num(mustOpt(options, 'challenge-id'), 'challenge-id');
+      const hints = await client.request('GET', `/game/${gameId}/challenge/${challengeId}/hint`);
+      const list = Array.isArray(hints) ? hints : (Array.isArray(hints?.data) ? hints.data : []);
+      toJSON({
+        game_id: gameId,
+        challenge_id: challengeId,
+        hint_count: list.length,
+        hints: list,
       });
       return;
     }

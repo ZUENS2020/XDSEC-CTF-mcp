@@ -44,6 +44,7 @@ node skills/xidian-ctf-auto/scripts/xdctf_automation.mjs games list --page 1 --p
 ```bash
 node skills/xidian-ctf-auto/scripts/xdctf_automation.mjs challenges list --game-id 25
 node skills/xidian-ctf-auto/scripts/xdctf_automation.mjs challenges description --game-id 25 --challenge-id 123
+node skills/xidian-ctf-auto/scripts/xdctf_automation.mjs challenges hints --game-id 25 --challenge-id 123
 ```
 
 ```bash
