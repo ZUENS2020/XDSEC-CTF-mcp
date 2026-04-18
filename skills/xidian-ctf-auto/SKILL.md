@@ -28,7 +28,7 @@ xdctf_password: your_password
 
 ## 依赖
 ```bash
-npm i playwright
+npm i -g playwright
 npx playwright install chromium
 ```
 

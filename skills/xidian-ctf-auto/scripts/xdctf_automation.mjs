@@ -4,6 +4,7 @@ import path from 'node:path';
 import process from 'node:process';
 import crypto from 'node:crypto';
 import childProcess from 'node:child_process';
+import { createRequire } from 'node:module';
 
 const DEFAULT_BASE_URL = 'https://ctf.xidian.edu.cn';
 const DEFAULT_API_PREFIX = '/api';
@@ -113,10 +114,19 @@ function solvePowChallenge(challenge) {
 }
 
 async function importPlaywright() {
+  const require = createRequire(import.meta.url);
   try {
-    return await import('playwright');
+    return require('playwright');
   } catch {
-    throw new Error('playwright not found. Install: npm i playwright && npx playwright install chromium');
+    const npmRootG = shellOut('npm root -g');
+    if (npmRootG) {
+      try {
+        return require(path.join(npmRootG, 'playwright'));
+      } catch {
+        // fall through to error below
+      }
+    }
+    throw new Error('playwright not found. Install globally: npm i -g playwright && npx playwright install chromium');
   }
 }
 
