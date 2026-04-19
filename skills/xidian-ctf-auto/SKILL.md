@@ -33,12 +33,13 @@ npx playwright install chromium
 ```
 
 ## 常用命令
+先执行初始化（强制第一步）：
 ```bash
-node skills/xidian-ctf-auto/scripts/xdctf_automation.mjs auth login --setting-file setting.md
+node skills/xidian-ctf-auto/scripts/xdctf_automation.mjs init challenge --game-id 25 --challenge-id 123 --dest ./downloads
 ```
 
 ```bash
-node skills/xidian-ctf-auto/scripts/xdctf_automation.mjs init challenge --game-id 25 --challenge-id 123 --dest ./downloads
+node skills/xidian-ctf-auto/scripts/xdctf_automation.mjs auth login --setting-file setting.md
 ```
 
 ```bash
@@ -62,6 +63,7 @@ node skills/xidian-ctf-auto/scripts/xdctf_automation.mjs instance start --game-i
 node skills/xidian-ctf-auto/scripts/xdctf_automation.mjs instance status --game-id 25 --challenge-id 123
 node skills/xidian-ctf-auto/scripts/xdctf_automation.mjs instance extend --game-id 25 --challenge-id 123
 node skills/xidian-ctf-auto/scripts/xdctf_automation.mjs instance endpoint --game-id 25 --challenge-id 123
+node skills/xidian-ctf-auto/scripts/xdctf_automation.mjs instance endpoint --game-id 25 --challenge-id 123 --wsrx-api-base http://127.0.0.1:3307
 node skills/xidian-ctf-auto/scripts/xdctf_automation.mjs instance renew --game-id 25 --challenge-id 123
 node skills/xidian-ctf-auto/scripts/xdctf_automation.mjs instance shutdown --game-id 25 --challenge-id 123
 node skills/xidian-ctf-auto/scripts/xdctf_automation.mjs instance stop --game-id 25 --challenge-id 123
@@ -72,8 +74,6 @@ node skills/xidian-ctf-auto/scripts/xdctf_automation.mjs submit flag --game-id 2
 ```
 
 ## 工作流建议
-1. `auth login` 确保 token 可用。
-2. `games list` / `challenges list` 定位题目。
-3. `files list` + `files download` 拉附件。
-4. `instance start` 启环境。
-5. `submit flag` 交 flag 并回查。
+1. `games list` / `challenges list` 定位题目。
+2. `init challenge`（强制第一步）：题目名/题面/附件/环境一起初始化。
+3. 其余 `challenges/files/instance/submit` 命令在同一题目上继续操作。

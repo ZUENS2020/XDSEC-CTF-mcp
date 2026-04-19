@@ -10,7 +10,9 @@ const DEFAULT_BASE_URL = 'https://ctf.xidian.edu.cn';
 const DEFAULT_API_PREFIX = '/api';
 const DEFAULT_TOKEN_FILE = '.xdctf_token';
 const DEFAULT_SETTING_FILE = 'setting.md';
+const DEFAULT_INIT_STATE_FILE = '.xdctf_init_state.json';
 const DEFAULT_WSRX_LOG = path.join(process.env.HOME || '', 'Library/Application Support/org.xdsec.wsrx/logs/wsrx.log');
+const DEFAULT_WSRX_API_BASE = 'http://127.0.0.1:3307';
 
 function parseKVText(text) {
   const kv = {};
@@ -425,6 +427,73 @@ function parseListenPorts(listenText) {
   return out.filter((x) => Number.isFinite(x));
 }
 
+function toTrafficWsUrl(baseUrl, traffic, remotePort) {
+  const u = new URL(baseUrl);
+  u.protocol = u.protocol === 'https:' ? 'wss:' : 'ws:';
+  u.pathname = '/api/traffic/' + encodeURIComponent(String(traffic || ''));
+  u.search = '';
+  u.searchParams.set('port', String(remotePort));
+  return u.toString();
+}
+
+async function wsrxRequestJson({ apiBase, method, endpoint, body = null }) {
+  const u = new URL(endpoint, apiBase.endsWith('/') ? apiBase : `${apiBase}/`).toString();
+  const headers = { Accept: 'application/json' };
+  const init = { method, headers };
+  if (body != null) {
+    headers['Content-Type'] = 'application/json';
+    init.body = JSON.stringify(body);
+  }
+  const resp = await fetch(u, init);
+  const text = await resp.text();
+  if (resp.status >= 400) {
+    throw new Error(`WSRX ${method} ${endpoint} HTTP ${resp.status}: ${text.slice(0, 200)}`);
+  }
+  if (!text.trim()) return null;
+  try {
+    return JSON.parse(text);
+  } catch {
+    return { raw: text };
+  }
+}
+
+function selectPoolMapping(pool, remoteUrl) {
+  if (!Array.isArray(pool)) return null;
+  const exact = pool.filter((x) => x && x.remote === remoteUrl);
+  if (!exact.length) return null;
+  return exact[exact.length - 1];
+}
+
+function loadInitState(initStateFile) {
+  const full = path.resolve(initStateFile);
+  if (!fs.existsSync(full)) return null;
+  try {
+    const obj = JSON.parse(fs.readFileSync(full, 'utf8'));
+    return obj && typeof obj === 'object' ? obj : null;
+  } catch {
+    return null;
+  }
+}
+
+function saveInitState(initStateFile, payload) {
+  const full = path.resolve(initStateFile);
+  fs.writeFileSync(full, `${JSON.stringify(payload, null, 2)}\n`, 'utf8');
+}
+
+function assertInitialized(initStateFile, gameId, challengeId) {
+  const state = loadInitState(initStateFile);
+  if (!state) {
+    throw new Error(
+      `not initialized for game/challenge. run: node xdctf_automation.mjs init challenge --game-id ${gameId} --challenge-id ${challengeId}`,
+    );
+  }
+  if (Number(state.game_id) !== Number(gameId) || Number(state.challenge_id) !== Number(challengeId)) {
+    throw new Error(
+      `initialized target mismatch (current: ${state.game_id}/${state.challenge_id}, requested: ${gameId}/${challengeId}). run init challenge first.`,
+    );
+  }
+}
+
 function fileDownloadCandidates(gameId, challengeId, folder, file) {
   return [
     { p: `/game/${gameId}/challenge/${challengeId}/file/${folder}/${file}`, q: {} },
@@ -494,7 +563,7 @@ Usage:
   node xdctf_automation.mjs challenges hints --game-id N --challenge-id N
   node xdctf_automation.mjs files list --game-id N --challenge-id N [--folder F] [--all]
   node xdctf_automation.mjs files download --game-id N --challenge-id N [--all-files|--file NAME --folder F] [--dest attachments] [--all]
-  node xdctf_automation.mjs instance status|env|start|renew|extend|stop|shutdown|endpoint --game-id N --challenge-id N [--wsrx-log PATH]
+  node xdctf_automation.mjs instance status|env|start|renew|extend|stop|shutdown|endpoint --game-id N --challenge-id N [--wsrx-log PATH] [--wsrx-api-base http://127.0.0.1:3307]
   node xdctf_automation.mjs init challenge --game-id N --challenge-id N [--dest downloads] [--all]
   node xdctf_automation.mjs submit --game-id N --challenge-id N --flag 'flag{...}' [--check-after]
 
@@ -503,6 +572,7 @@ Global options:
   --api-prefix /api
   --token-file .xdctf_token
   --setting-file setting.md
+  --init-state-file .xdctf_init_state.json
 `);
 }
 
@@ -518,6 +588,7 @@ async function main() {
   const apiPrefix = String(options['api-prefix'] || DEFAULT_API_PREFIX);
   const tokenFile = String(options['token-file'] || DEFAULT_TOKEN_FILE);
   const settingFile = String(options['setting-file'] || DEFAULT_SETTING_FILE);
+  const initStateFile = String(options['init-state-file'] || DEFAULT_INIT_STATE_FILE);
 
   const client = new BrowserApiClient({ baseUrl, apiPrefix, tokenFile });
   await client.open();
@@ -606,7 +677,7 @@ async function main() {
       const env = await client.request('GET', `/game/${gameId}/challenge/${challengeId}/env`);
       const status = await getInstanceStatusWithFallback(client, gameId, challengeId);
 
-      toJSON({
+      const result = {
         game_id: gameId,
         challenge_id: challengeId,
         challenge: {
@@ -624,7 +695,14 @@ async function main() {
           env,
           status,
         },
+      };
+      saveInitState(initStateFile, {
+        game_id: gameId,
+        challenge_id: challengeId,
+        challenge_name: challenge?.name || null,
+        initialized_at: Math.floor(Date.now() / 1000),
       });
+      toJSON(result);
       return;
     }
 
@@ -642,6 +720,7 @@ async function main() {
       await authIfNeeded();
       const gameId = num(mustOpt(options, 'game-id'), 'game-id');
       const challengeId = num(mustOpt(options, 'challenge-id'), 'challenge-id');
+      assertInitialized(initStateFile, gameId, challengeId);
       const out = await client.request('GET', `/game/${gameId}/challenge/${challengeId}`);
       toJSON(out);
       return;
@@ -651,6 +730,7 @@ async function main() {
       await authIfNeeded();
       const gameId = num(mustOpt(options, 'game-id'), 'game-id');
       const challengeId = num(mustOpt(options, 'challenge-id'), 'challenge-id');
+      assertInitialized(initStateFile, gameId, challengeId);
       const challenge = await client.request('GET', `/game/${gameId}/challenge/${challengeId}`);
       const picked = pickChallengeDescription(challenge);
       if (!picked) {
@@ -677,6 +757,7 @@ async function main() {
       await authIfNeeded();
       const gameId = num(mustOpt(options, 'game-id'), 'game-id');
       const challengeId = num(mustOpt(options, 'challenge-id'), 'challenge-id');
+      assertInitialized(initStateFile, gameId, challengeId);
       const hints = await client.request('GET', `/game/${gameId}/challenge/${challengeId}/hint`);
       const list = Array.isArray(hints) ? hints : (Array.isArray(hints?.data) ? hints.data : []);
       toJSON({
@@ -692,6 +773,7 @@ async function main() {
       await authIfNeeded();
       const gameId = num(mustOpt(options, 'game-id'), 'game-id');
       const challengeId = num(mustOpt(options, 'challenge-id'), 'challenge-id');
+      assertInitialized(initStateFile, gameId, challengeId);
       const folder = options.folder ? String(options.folder) : undefined;
       const includeAll = options.all === true;
       const raw = await client.request('GET', `/game/${gameId}/challenge/${challengeId}/file`, {
@@ -705,6 +787,7 @@ async function main() {
       await authIfNeeded();
       const gameId = num(mustOpt(options, 'game-id'), 'game-id');
       const challengeId = num(mustOpt(options, 'challenge-id'), 'challenge-id');
+      assertInitialized(initStateFile, gameId, challengeId);
       const destRoot = path.resolve(String(options.dest || 'attachments'));
 
       const includeAll = options.all === true;
@@ -730,6 +813,7 @@ async function main() {
       await authIfNeeded();
       const gameId = num(mustOpt(options, 'game-id'), 'game-id');
       const challengeId = num(mustOpt(options, 'challenge-id'), 'challenge-id');
+      assertInitialized(initStateFile, gameId, challengeId);
       if (action === 'endpoint') {
         const statusPayload = await getInstanceStatusWithFallback(client, gameId, challengeId);
         const instances = parseInstanceStatusPayload(statusPayload);
@@ -746,14 +830,42 @@ async function main() {
 
         const traffic = running.traffic || null;
         const remotePort = Number(running?.ports?.[0]) || null;
+        const remoteWs = traffic && remotePort ? toTrafficWsUrl(baseUrl, traffic, remotePort) : null;
+        const wsrxApiBase = String(options['wsrx-api-base'] || DEFAULT_WSRX_API_BASE);
         const logPath = String(options['wsrx-log'] || DEFAULT_WSRX_LOG);
         const parsed = parseWsrxCandidatesFromLog({ logPath, traffic, remotePort });
         const fallbackHits = pickEndpointFromTail(parsed.tail);
         const fromSig = parsed.candidates.filter((x) => x.endpoint);
-        const strict = fromSig.length ? fromSig[fromSig.length - 1] : null;
+        const strictLog = fromSig.length ? fromSig[fromSig.length - 1] : null;
         const listenText = shellOut("lsof -nP -iTCP -sTCP:LISTEN | rg -i 'wsrx|websocketreflector|reflectorx'");
         const listenerPorts = parseListenPorts(listenText).filter((p) => p !== 3307);
-        const inferred = strict || (listenerPorts.length === 1 ? { endpoint: `127.0.0.1:${listenerPorts[0]}`, inferred: true } : null);
+        let pool = null;
+        let poolEntry = null;
+        let poolCreated = null;
+        let poolError = null;
+        try {
+          if (remoteWs) {
+            pool = await wsrxRequestJson({ apiBase: wsrxApiBase, method: 'GET', endpoint: '/pool' });
+            poolEntry = selectPoolMapping(pool, remoteWs);
+            if (!poolEntry) {
+              poolCreated = await wsrxRequestJson({
+                apiBase: wsrxApiBase,
+                method: 'POST',
+                endpoint: '/pool',
+                body: { remote: remoteWs, local: '127.0.0.1:0' },
+              });
+              poolEntry = poolCreated && typeof poolCreated === 'object' ? poolCreated : null;
+            }
+          }
+        } catch (err) {
+          poolError = String(err?.message || err);
+        }
+        const strictPool = poolEntry && typeof poolEntry.local === 'string'
+          ? { endpoint: poolEntry.local, source: poolCreated ? 'wsrx_pool_created' : 'wsrx_pool_existing' }
+          : null;
+        const inferred = strictPool
+          || strictLog
+          || (listenerPorts.length === 1 ? { endpoint: `127.0.0.1:${listenerPorts[0]}`, inferred: true } : null);
         const approx = fallbackHits.length ? fallbackHits[fallbackHits.length - 1] : null;
 
         const alivePort = fs.existsSync(path.join(path.dirname(parsed.log_path), '..', '.rx.is.alive'))
@@ -766,9 +878,16 @@ async function main() {
           found: Boolean(inferred),
           traffic,
           remote_port: remotePort,
+          remote_ws: remoteWs,
           local_endpoint: inferred?.endpoint || null,
-          confidence: strict ? 'strict_token_match' : (inferred ? 'single_listener_inferred' : 'none'),
+          confidence: strictPool
+            ? (poolCreated ? 'wsrx_pool_created' : 'wsrx_pool_existing')
+            : (strictLog ? 'strict_log_token_match' : (inferred ? 'single_listener_inferred' : 'none')),
           evidence: {
+            wsrx_api_base: wsrxApiBase,
+            wsrx_pool_error: poolError,
+            wsrx_pool_existing_count: Array.isArray(pool) ? pool.length : null,
+            wsrx_pool_entry: poolEntry,
             wsrx_log: parsed.log_path,
             matched_lines: fromSig.slice(-10),
             recent_instance_lines: fallbackHits.slice(-10),
@@ -808,6 +927,7 @@ async function main() {
       await authIfNeeded();
       const gameId = num(mustOpt(options, 'game-id'), 'game-id');
       const challengeId = num(mustOpt(options, 'challenge-id'), 'challenge-id');
+      assertInitialized(initStateFile, gameId, challengeId);
       const flag = mustOpt(options, 'flag');
       const submit = await client.request('POST', `/game/${gameId}/challenge/${challengeId}/submit`, {
         body: { content: flag },
