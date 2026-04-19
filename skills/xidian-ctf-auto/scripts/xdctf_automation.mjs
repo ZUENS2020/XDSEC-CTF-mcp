@@ -91,7 +91,31 @@ function mustOpt(opts, key) {
 }
 
 function toJSON(data) {
-  process.stdout.write(`${JSON.stringify(data, null, 2)}\n`);
+  process.stdout.write(`${JSON.stringify(redactServicePortOutput(data), null, 2)}\n`);
+}
+
+function redactServicePortOutput(value) {
+  const blockedKeys = new Set([
+    'port',
+    'ports',
+    'remote_port',
+    'instance_port',
+    'remote_ws',
+    'exposed_ports',
+  ]);
+  if (Array.isArray(value)) return value.map((v) => redactServicePortOutput(v));
+  if (!value || typeof value !== 'object') {
+    if (typeof value === 'string') {
+      return value.replace(/([?&]port=)\d+/g, '$1<hidden>');
+    }
+    return value;
+  }
+  const out = {};
+  for (const [k, v] of Object.entries(value)) {
+    if (blockedKeys.has(k)) continue;
+    out[k] = redactServicePortOutput(v);
+  }
+  return out;
 }
 
 function sha256Hex(text) {
@@ -911,10 +935,8 @@ async function main() {
           challenge_id: challengeId,
           found: Boolean(remotePort) && (withLocal ? Boolean(inferred) : true),
           instance_name: running?.name || null,
-          instance_port: remotePort,
           endpoint: withLocal ? (inferred?.endpoint || null) : (remotePort ? `instance:${remotePort}` : null),
           traffic,
-          remote_port: remotePort,
           remote_ws: remoteWs,
           local_endpoint: withLocal ? (inferred?.endpoint || null) : null,
           confidence: withLocal
