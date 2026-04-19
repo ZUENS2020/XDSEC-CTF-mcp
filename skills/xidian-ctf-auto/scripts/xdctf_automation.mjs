@@ -425,6 +425,63 @@ function parseListenPorts(listenText) {
   return out.filter((x) => Number.isFinite(x));
 }
 
+function fileDownloadCandidates(gameId, challengeId, folder, file) {
+  return [
+    { p: `/game/${gameId}/challenge/${challengeId}/file/${folder}/${file}`, q: {} },
+    { p: `/game/${gameId}/challenge/${challengeId}/file/${file}`, q: { folder } },
+    { p: `/game/${gameId}/challenge/${challengeId}/file`, q: { folder, file } },
+    { p: `/game/${gameId}/challenge/${challengeId}/file`, q: { folder, name: file } },
+    { p: `/game/${gameId}/challenge/${challengeId}/file`, q: { path: `${folder}/${file}` } },
+  ];
+}
+
+async function downloadChallengeFiles({ client, gameId, challengeId, files, destRoot }) {
+  const downloaded = [];
+  for (const f of files) {
+    let ok = false;
+    let lastErr = null;
+    for (const c of fileDownloadCandidates(gameId, challengeId, f.folder, f.file)) {
+      try {
+        const bin = await client.request('GET', c.p, { params: c.q, wantBinary: true });
+        if (!bin.buffer || !bin.buffer.length) {
+          lastErr = 'empty binary';
+          continue;
+        }
+        const outDir = path.join(destRoot, String(gameId), String(challengeId), f.folder);
+        fs.mkdirSync(outDir, { recursive: true });
+        const outPath = path.join(outDir, f.file);
+        fs.writeFileSync(outPath, bin.buffer);
+        downloaded.push({ folder: f.folder, file: f.file, size: bin.buffer.length, saved_to: outPath, source_path: c.p });
+        ok = true;
+        break;
+      } catch (err) {
+        lastErr = String(err?.message || err);
+      }
+    }
+    if (!ok) throw new Error(`download failed for ${f.folder}/${f.file}: ${lastErr}`);
+  }
+  return downloaded;
+}
+
+async function getInstanceStatusWithFallback(client, gameId, challengeId) {
+  try {
+    return await client.request('GET', `/game/${gameId}/challenge/${challengeId}/instance`);
+  } catch (err) {
+    if (isHttpErrorFor(err, 403, 'GET', `/game/${gameId}/challenge/${challengeId}/instance`)) {
+      const gameLevel = await client.request('GET', `/game/${gameId}/instance`);
+      const instances = parseInstanceStatusPayload(gameLevel);
+      return instances.filter((x) => Number(x?.challenge_id) === challengeId);
+    }
+    throw err;
+  }
+}
+
+function isInstanceAlreadyRunningError(err, gameId, challengeId) {
+  const msg = String(err?.message || err || '').toLowerCase();
+  if (!isHttpErrorFor(err, 412, 'POST', `/game/${gameId}/challenge/${challengeId}/instance`)) return false;
+  return msg.includes('only start one instance') || msg.includes('already');
+}
+
 function usage() {
   console.log(`xdctf_automation.mjs
 
@@ -438,6 +495,7 @@ Usage:
   node xdctf_automation.mjs files list --game-id N --challenge-id N [--folder F] [--all]
   node xdctf_automation.mjs files download --game-id N --challenge-id N [--all-files|--file NAME --folder F] [--dest attachments] [--all]
   node xdctf_automation.mjs instance status|env|start|renew|extend|stop|shutdown|endpoint --game-id N --challenge-id N [--wsrx-log PATH]
+  node xdctf_automation.mjs init challenge --game-id N --challenge-id N [--dest downloads] [--all]
   node xdctf_automation.mjs submit --game-id N --challenge-id N --flag 'flag{...}' [--check-after]
 
 Global options:
@@ -493,6 +551,80 @@ async function main() {
         params: { page, page_size: pageSize, host_type: hostType, weight },
       });
       toJSON(out);
+      return;
+    }
+
+    if (scope === 'init' && action === 'challenge') {
+      await authIfNeeded();
+      const gameId = num(mustOpt(options, 'game-id'), 'game-id');
+      const challengeId = num(mustOpt(options, 'challenge-id'), 'challenge-id');
+      const destRoot = path.resolve(String(options.dest || 'downloads'));
+      const includeAll = options.all === true;
+
+      const challenge = await client.request('GET', `/game/${gameId}/challenge/${challengeId}`);
+      const picked = pickChallengeDescription(challenge);
+
+      const fileListRaw = await client.request('GET', `/game/${gameId}/challenge/${challengeId}/file`, {
+        params: { all: includeAll },
+      });
+      const files = flattenFiles(fileListRaw);
+      const downloaded = files.length
+        ? await downloadChallengeFiles({ client, gameId, challengeId, files, destRoot })
+        : [];
+
+      let start = { started: true, reused: false, result: null };
+      try {
+        const started = await client.request('POST', `/game/${gameId}/challenge/${challengeId}/instance`);
+        start = { started: true, reused: false, result: started };
+      } catch (err) {
+        if (isInstanceAlreadyRunningError(err, gameId, challengeId)) {
+          const statusAfterFail = await getInstanceStatusWithFallback(client, gameId, challengeId);
+          const ownRunning = parseInstanceStatusPayload(statusAfterFail)
+            .find((x) => String(x?.state || '').toLowerCase() === 'running');
+          if (ownRunning) {
+            start = { started: false, reused: true, reason: 'already_running_current_challenge' };
+          } else {
+            let activeInstances = [];
+            try {
+              const gameLevel = await client.request('GET', `/game/${gameId}/instance`);
+              activeInstances = parseInstanceStatusPayload(gameLevel);
+            } catch {
+              activeInstances = [];
+            }
+            start = {
+              started: false,
+              reused: false,
+              reason: 'another_instance_running',
+              active_instances: activeInstances,
+            };
+          }
+        } else {
+          throw err;
+        }
+      }
+
+      const env = await client.request('GET', `/game/${gameId}/challenge/${challengeId}/env`);
+      const status = await getInstanceStatusWithFallback(client, gameId, challengeId);
+
+      toJSON({
+        game_id: gameId,
+        challenge_id: challengeId,
+        challenge: {
+          name: challenge?.name || null,
+          description: picked?.text || null,
+          description_field: picked?.field || null,
+        },
+        files: {
+          listed: files,
+          downloaded_count: downloaded.length,
+          downloaded,
+        },
+        instance: {
+          start,
+          env,
+          status,
+        },
+      });
       return;
     }
 
@@ -589,38 +721,7 @@ async function main() {
         }
       }
 
-      const candidates = (gameId2, challengeId2, folder2, file2) => ([
-        { p: `/game/${gameId2}/challenge/${challengeId2}/file/${folder2}/${file2}`, q: {} },
-        { p: `/game/${gameId2}/challenge/${challengeId2}/file/${file2}`, q: { folder: folder2 } },
-        { p: `/game/${gameId2}/challenge/${challengeId2}/file`, q: { folder: folder2, file: file2 } },
-        { p: `/game/${gameId2}/challenge/${challengeId2}/file`, q: { folder: folder2, name: file2 } },
-        { p: `/game/${gameId2}/challenge/${challengeId2}/file`, q: { path: `${folder2}/${file2}` } },
-      ]);
-
-      const downloaded = [];
-      for (const f of files) {
-        let ok = false;
-        let lastErr = null;
-        for (const c of candidates(gameId, challengeId, f.folder, f.file)) {
-          try {
-            const bin = await client.request('GET', c.p, { params: c.q, wantBinary: true });
-            if (!bin.buffer || !bin.buffer.length) {
-              lastErr = 'empty binary';
-              continue;
-            }
-            const outDir = path.join(destRoot, String(gameId), String(challengeId), f.folder);
-            fs.mkdirSync(outDir, { recursive: true });
-            const outPath = path.join(outDir, f.file);
-            fs.writeFileSync(outPath, bin.buffer);
-            downloaded.push({ folder: f.folder, file: f.file, size: bin.buffer.length, saved_to: outPath, source_path: c.p });
-            ok = true;
-            break;
-          } catch (err) {
-            lastErr = String(err?.message || err);
-          }
-        }
-        if (!ok) throw new Error(`download failed for ${f.folder}/${f.file}: ${lastErr}`);
-      }
+      const downloaded = await downloadChallengeFiles({ client, gameId, challengeId, files, destRoot });
       toJSON({ downloaded });
       return;
     }
@@ -629,22 +730,8 @@ async function main() {
       await authIfNeeded();
       const gameId = num(mustOpt(options, 'game-id'), 'game-id');
       const challengeId = num(mustOpt(options, 'challenge-id'), 'challenge-id');
-      const getStatus = async () => {
-        try {
-          return await client.request('GET', `/game/${gameId}/challenge/${challengeId}/instance`);
-        } catch (err) {
-          // Some training games deny challenge-level instance status to players.
-          if (isHttpErrorFor(err, 403, 'GET', `/game/${gameId}/challenge/${challengeId}/instance`)) {
-            const gameLevel = await client.request('GET', `/game/${gameId}/instance`);
-            const instances = parseInstanceStatusPayload(gameLevel);
-            return instances.filter((x) => Number(x?.challenge_id) === challengeId);
-          }
-          throw err;
-        }
-      };
-
       if (action === 'endpoint') {
-        const statusPayload = await getStatus();
+        const statusPayload = await getInstanceStatusWithFallback(client, gameId, challengeId);
         const instances = parseInstanceStatusPayload(statusPayload);
         const running = instances.find((x) => String(x?.state || '').toLowerCase() === 'running') || instances[0] || null;
         if (!running) {
@@ -705,7 +792,7 @@ async function main() {
       const [method, apiPath] = map[actionNormalized];
       let out;
       if (actionNormalized === 'status') {
-        out = await getStatus();
+        out = await getInstanceStatusWithFallback(client, gameId, challengeId);
       } else {
         out = await client.request(method, apiPath, { body: method === 'PATCH' ? {} : null });
       }

@@ -38,6 +38,10 @@ node skills/xidian-ctf-auto/scripts/xdctf_automation.mjs auth login --setting-fi
 ```
 
 ```bash
+node skills/xidian-ctf-auto/scripts/xdctf_automation.mjs init challenge --game-id 25 --challenge-id 123 --dest ./downloads
+```
+
+```bash
 node skills/xidian-ctf-auto/scripts/xdctf_automation.mjs games list --page 1 --page-size 20
 ```
 
