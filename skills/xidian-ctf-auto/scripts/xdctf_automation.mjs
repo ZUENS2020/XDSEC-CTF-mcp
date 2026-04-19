@@ -464,6 +464,33 @@ function selectPoolMapping(pool, remoteUrl) {
   return exact[exact.length - 1];
 }
 
+async function wsrxPruneStaleTrafficMappings(apiBase, pool, keepRemote) {
+  if (!Array.isArray(pool)) return { deleted: [], errors: [] };
+  const toDelete = pool.filter((x) => {
+    const remote = String(x?.remote || '');
+    if (!remote.includes('/api/traffic/')) return false;
+    return remote !== keepRemote;
+  });
+  const deleted = [];
+  const errors = [];
+  for (const e of toDelete) {
+    const local = String(e?.local || '');
+    if (!local) continue;
+    try {
+      await wsrxRequestJson({
+        apiBase,
+        method: 'DELETE',
+        endpoint: '/pool',
+        body: { local },
+      });
+      deleted.push({ local, remote: e.remote || null });
+    } catch (err) {
+      errors.push({ local, remote: e.remote || null, error: String(err?.message || err) });
+    }
+  }
+  return { deleted, errors };
+}
+
 function loadInitState(initStateFile) {
   const full = path.resolve(initStateFile);
   if (!fs.existsSync(full)) return null;
@@ -563,7 +590,7 @@ Usage:
   node xdctf_automation.mjs challenges hints --game-id N --challenge-id N
   node xdctf_automation.mjs files list --game-id N --challenge-id N [--folder F] [--all]
   node xdctf_automation.mjs files download --game-id N --challenge-id N [--all-files|--file NAME --folder F] [--dest attachments] [--all]
-  node xdctf_automation.mjs instance status|env|start|renew|extend|stop|shutdown|endpoint --game-id N --challenge-id N [--wsrx-log PATH] [--wsrx-api-base http://127.0.0.1:3307]
+  node xdctf_automation.mjs instance status|env|start|renew|extend|stop|shutdown|endpoint --game-id N --challenge-id N [--instance-only] [--wsrx-log PATH] [--wsrx-api-base http://127.0.0.1:3307] [--wsrx-prune true|false]
   node xdctf_automation.mjs init challenge --game-id N --challenge-id N [--dest downloads] [--all]
   node xdctf_automation.mjs submit --game-id N --challenge-id N --flag 'flag{...}' [--check-after]
 
@@ -830,8 +857,10 @@ async function main() {
 
         const traffic = running.traffic || null;
         const remotePort = Number(running?.ports?.[0]) || null;
+        const withLocal = options['instance-only'] !== true;
         const remoteWs = traffic && remotePort ? toTrafficWsUrl(baseUrl, traffic, remotePort) : null;
         const wsrxApiBase = String(options['wsrx-api-base'] || DEFAULT_WSRX_API_BASE);
+        const wsrxPrune = options['wsrx-prune'] === undefined ? true : String(options['wsrx-prune']).toLowerCase() !== 'false';
         const logPath = String(options['wsrx-log'] || DEFAULT_WSRX_LOG);
         const parsed = parseWsrxCandidatesFromLog({ logPath, traffic, remotePort });
         const fallbackHits = pickEndpointFromTail(parsed.tail);
@@ -843,9 +872,14 @@ async function main() {
         let poolEntry = null;
         let poolCreated = null;
         let poolError = null;
+        let poolPrune = { deleted: [], errors: [] };
         try {
-          if (remoteWs) {
+          if (withLocal && remoteWs) {
             pool = await wsrxRequestJson({ apiBase: wsrxApiBase, method: 'GET', endpoint: '/pool' });
+            if (wsrxPrune) {
+              poolPrune = await wsrxPruneStaleTrafficMappings(wsrxApiBase, pool, remoteWs);
+              pool = await wsrxRequestJson({ apiBase: wsrxApiBase, method: 'GET', endpoint: '/pool' });
+            }
             poolEntry = selectPoolMapping(pool, remoteWs);
             if (!poolEntry) {
               poolCreated = await wsrxRequestJson({
@@ -875,16 +909,25 @@ async function main() {
         toJSON({
           game_id: gameId,
           challenge_id: challengeId,
-          found: Boolean(inferred),
+          found: Boolean(remotePort) && (withLocal ? Boolean(inferred) : true),
+          instance_name: running?.name || null,
+          instance_port: remotePort,
+          endpoint: withLocal ? (inferred?.endpoint || null) : (remotePort ? `instance:${remotePort}` : null),
           traffic,
           remote_port: remotePort,
           remote_ws: remoteWs,
-          local_endpoint: inferred?.endpoint || null,
-          confidence: strictPool
-            ? (poolCreated ? 'wsrx_pool_created' : 'wsrx_pool_existing')
-            : (strictLog ? 'strict_log_token_match' : (inferred ? 'single_listener_inferred' : 'none')),
+          local_endpoint: withLocal ? (inferred?.endpoint || null) : null,
+          confidence: withLocal
+            ? (strictPool
+              ? (poolCreated ? 'wsrx_pool_created' : 'wsrx_pool_existing')
+              : (strictLog ? 'strict_log_token_match' : (inferred ? 'single_listener_inferred' : 'none')))
+            : 'instance_port_only',
           evidence: {
+            with_local: withLocal,
             wsrx_api_base: wsrxApiBase,
+            wsrx_prune: wsrxPrune,
+            wsrx_prune_deleted: poolPrune.deleted,
+            wsrx_prune_errors: poolPrune.errors,
             wsrx_pool_error: poolError,
             wsrx_pool_existing_count: Array.isArray(pool) ? pool.length : null,
             wsrx_pool_entry: poolEntry,
