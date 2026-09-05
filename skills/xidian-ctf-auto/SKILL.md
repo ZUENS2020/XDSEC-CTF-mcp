@@ -32,45 +32,55 @@ npm i -g playwright
 npx playwright install chromium
 ```
 
+## 浏览器要求（仅 CDP 模式）
+先用你日常登录的 Chrome 启动远程调试端口（示例）：
+
+```bash
+/Applications/Google\ Chrome.app/Contents/MacOS/Google\ Chrome --remote-debugging-port=9222
+```
+
+之后所有命令都加：
+- `--use-cdp http://127.0.0.1:9222`
+
 ## 常用命令
 先执行初始化（强制第一步）：
 ```bash
-node skills/xidian-ctf-auto/scripts/xdctf_automation.mjs init challenge --game-id 25 --challenge-id 123 --dest ./downloads
+node skills/xidian-ctf-auto/scripts/xdctf_automation.mjs init challenge --game-id 25 --challenge-id 123 --dest ./downloads --use-cdp http://127.0.0.1:9222
 ```
 
 ```bash
-node skills/xidian-ctf-auto/scripts/xdctf_automation.mjs auth login --setting-file setting.md
+node skills/xidian-ctf-auto/scripts/xdctf_automation.mjs auth login --setting-file setting.md --use-cdp http://127.0.0.1:9222
 ```
 
 ```bash
-node skills/xidian-ctf-auto/scripts/xdctf_automation.mjs games list --page 1 --page-size 20
+node skills/xidian-ctf-auto/scripts/xdctf_automation.mjs games list --page 1 --page-size 20 --use-cdp http://127.0.0.1:9222
 ```
 
 ```bash
-node skills/xidian-ctf-auto/scripts/xdctf_automation.mjs challenges list --game-id 25
-node skills/xidian-ctf-auto/scripts/xdctf_automation.mjs challenges description --game-id 25 --challenge-id 123
-node skills/xidian-ctf-auto/scripts/xdctf_automation.mjs challenges hints --game-id 25 --challenge-id 123
+node skills/xidian-ctf-auto/scripts/xdctf_automation.mjs challenges list --game-id 25 --use-cdp http://127.0.0.1:9222
+node skills/xidian-ctf-auto/scripts/xdctf_automation.mjs challenges description --game-id 25 --challenge-id 123 --use-cdp http://127.0.0.1:9222
+node skills/xidian-ctf-auto/scripts/xdctf_automation.mjs challenges hints --game-id 25 --challenge-id 123 --use-cdp http://127.0.0.1:9222
 ```
 
 ```bash
-node skills/xidian-ctf-auto/scripts/xdctf_automation.mjs files list --game-id 25 --challenge-id 123
-node skills/xidian-ctf-auto/scripts/xdctf_automation.mjs files download --game-id 25 --challenge-id 123 --all-files --dest ./downloads
+node skills/xidian-ctf-auto/scripts/xdctf_automation.mjs files list --game-id 25 --challenge-id 123 --use-cdp http://127.0.0.1:9222
+node skills/xidian-ctf-auto/scripts/xdctf_automation.mjs files download --game-id 25 --challenge-id 123 --all-files --dest ./downloads --use-cdp http://127.0.0.1:9222
 ```
 
 ```bash
-node skills/xidian-ctf-auto/scripts/xdctf_automation.mjs instance env --game-id 25 --challenge-id 123
-node skills/xidian-ctf-auto/scripts/xdctf_automation.mjs instance start --game-id 25 --challenge-id 123
-node skills/xidian-ctf-auto/scripts/xdctf_automation.mjs instance status --game-id 25 --challenge-id 123
-node skills/xidian-ctf-auto/scripts/xdctf_automation.mjs instance extend --game-id 25 --challenge-id 123
-node skills/xidian-ctf-auto/scripts/xdctf_automation.mjs instance endpoint --game-id 25 --challenge-id 123
-node skills/xidian-ctf-auto/scripts/xdctf_automation.mjs instance endpoint --game-id 25 --challenge-id 123 --wsrx-api-base http://127.0.0.1:3307
-node skills/xidian-ctf-auto/scripts/xdctf_automation.mjs instance renew --game-id 25 --challenge-id 123
-node skills/xidian-ctf-auto/scripts/xdctf_automation.mjs instance shutdown --game-id 25 --challenge-id 123
-node skills/xidian-ctf-auto/scripts/xdctf_automation.mjs instance stop --game-id 25 --challenge-id 123
+node skills/xidian-ctf-auto/scripts/xdctf_automation.mjs instance env --game-id 25 --challenge-id 123 --use-cdp http://127.0.0.1:9222
+node skills/xidian-ctf-auto/scripts/xdctf_automation.mjs instance start --game-id 25 --challenge-id 123 --use-cdp http://127.0.0.1:9222
+node skills/xidian-ctf-auto/scripts/xdctf_automation.mjs instance status --game-id 25 --challenge-id 123 --use-cdp http://127.0.0.1:9222
+node skills/xidian-ctf-auto/scripts/xdctf_automation.mjs instance extend --game-id 25 --challenge-id 123 --use-cdp http://127.0.0.1:9222
+node skills/xidian-ctf-auto/scripts/xdctf_automation.mjs instance endpoint --game-id 25 --challenge-id 123 --use-cdp http://127.0.0.1:9222
+node skills/xidian-ctf-auto/scripts/xdctf_automation.mjs instance endpoint --game-id 25 --challenge-id 123 --wsrx-api-base http://127.0.0.1:3307 --use-cdp http://127.0.0.1:9222
+node skills/xidian-ctf-auto/scripts/xdctf_automation.mjs instance renew --game-id 25 --challenge-id 123 --use-cdp http://127.0.0.1:9222
+node skills/xidian-ctf-auto/scripts/xdctf_automation.mjs instance shutdown --game-id 25 --challenge-id 123 --use-cdp http://127.0.0.1:9222
+node skills/xidian-ctf-auto/scripts/xdctf_automation.mjs instance stop --game-id 25 --challenge-id 123 --use-cdp http://127.0.0.1:9222
 ```
 
 ```bash
-node skills/xidian-ctf-auto/scripts/xdctf_automation.mjs submit flag --game-id 25 --challenge-id 123 --flag 'flag{...}' --check-after
+node skills/xidian-ctf-auto/scripts/xdctf_automation.mjs submit flag --game-id 25 --challenge-id 123 --flag 'flag{...}' --check-after --use-cdp http://127.0.0.1:9222
 ```
 
 ## 工作流建议

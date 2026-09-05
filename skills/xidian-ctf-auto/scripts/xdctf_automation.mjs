@@ -13,6 +13,7 @@ const DEFAULT_SETTING_FILE = 'setting.md';
 const DEFAULT_INIT_STATE_FILE = '.xdctf_init_state.json';
 const DEFAULT_WSRX_LOG = path.join(process.env.HOME || '', 'Library/Application Support/org.xdsec.wsrx/logs/wsrx.log');
 const DEFAULT_WSRX_API_BASE = 'http://127.0.0.1:3307';
+const DEFAULT_CAPTCHA_FILE = '.xdctf_captcha.svg';
 
 function parseKVText(text) {
   const kv = {};
@@ -30,6 +31,13 @@ function parseKVText(text) {
     }
   }
   return kv;
+}
+
+function stripSvgTag(text) {
+  const t = String(text || '').trim();
+  if (!t) return t;
+  const i = t.indexOf('<svg');
+  return i >= 0 ? t.slice(i) : t;
 }
 
 function readSettings(settingPath) {
@@ -157,14 +165,16 @@ async function importPlaywright() {
 }
 
 class BrowserApiClient {
-  constructor({ baseUrl, apiPrefix, tokenFile }) {
+  constructor({ baseUrl, apiPrefix, tokenFile, cdpUrl }) {
     this.baseUrl = baseUrl.replace(/\/$/, '');
     this.apiPrefix = `/${String(apiPrefix).replace(/^\/+|\/+$/g, '')}`;
     this.tokenFile = path.resolve(tokenFile);
+    this.cdpUrl = String(cdpUrl || '');
     this.browser = null;
     this.context = null;
     this.page = null;
     this.token = null;
+    this.ownsPage = false;
   }
 
   apiUrl(p) {
@@ -185,28 +195,58 @@ class BrowserApiClient {
 
   async open() {
     const { chromium } = await importPlaywright();
-    const chromePath = process.env.XDCTF_CHROME_PATH;
-    if (chromePath) {
-      this.browser = await chromium.launch({ headless: true, executablePath: chromePath });
-    } else {
-      try {
-        // Prefer system Chrome so users don't need Playwright-managed browser downloads.
-        this.browser = await chromium.launch({ headless: true, channel: 'chrome' });
-      } catch {
-        this.browser = await chromium.launch({ headless: true });
-      }
+    if (!this.cdpUrl) {
+      throw new Error('cdp url required. pass --use-cdp http://127.0.0.1:9222 (or set XDCTF_CDP_URL).');
     }
-    this.context = await this.browser.newContext();
+    this.browser = await chromium.connectOverCDP(this.cdpUrl);
+    const contexts = this.browser.contexts();
+    const targetHost = new URL(this.baseUrl).host;
+    let pickedContext = null;
+    for (const ctx of contexts) {
+      const pages = ctx.pages();
+      for (const p of pages) {
+        try {
+          if (new URL(p.url()).host === targetHost) {
+            pickedContext = ctx;
+            break;
+          }
+        } catch {
+          // ignore unparsable page urls
+        }
+      }
+      if (pickedContext) break;
+    }
+    this.context = pickedContext || contexts[0];
+    if (!this.context) throw new Error(`no browser context found via CDP: ${this.cdpUrl}`);
+    // Use a dedicated page per command so concurrent runs don't interrupt each other.
     this.page = await this.context.newPage();
+    this.ownsPage = true;
     await this.page.goto(this.baseUrl, { waitUntil: 'domcontentloaded' });
   }
 
   async close() {
-    if (this.context) await this.context.close();
+    if (this.ownsPage && this.page) await this.page.close();
     if (this.browser) await this.browser.close();
     this.context = null;
     this.browser = null;
     this.page = null;
+    this.ownsPage = false;
+  }
+
+  async loadTokenFromPageStorage() {
+    if (!this.page) return null;
+    const token = await this.page.evaluate(() => {
+      try {
+        const raw = localStorage.getItem('account');
+        if (!raw) return null;
+        const obj = JSON.parse(raw);
+        return obj?.token || null;
+      } catch {
+        return null;
+      }
+    });
+    if (token) this.saveToken(token);
+    return token;
   }
 
   async browserFetch({ method, url, headers = {}, params = null, body = null, wantBinary = false }) {
@@ -302,6 +342,13 @@ class BrowserApiClient {
     }
     if (!answer && validator === 'none') {
       answer = '0xDEADBEEF';
+    }
+    if (!answer && validator === 'image' && challenge) {
+      const captchaPath = path.resolve(process.env.XDCTF_CAPTCHA_FILE || DEFAULT_CAPTCHA_FILE);
+      fs.writeFileSync(captchaPath, `${stripSvgTag(challenge)}\n`, 'utf8');
+      throw new Error(
+        `image captcha required. open ${captchaPath}, solve it, then put captcha_answer in setting.md (or pass --captcha-answer).`,
+      );
     }
 
     if (!captchaId) {
@@ -624,6 +671,7 @@ Global options:
   --token-file .xdctf_token
   --setting-file setting.md
   --init-state-file .xdctf_init_state.json
+  --use-cdp http://127.0.0.1:9222
 `);
 }
 
@@ -640,25 +688,35 @@ async function main() {
   const tokenFile = String(options['token-file'] || DEFAULT_TOKEN_FILE);
   const settingFile = String(options['setting-file'] || DEFAULT_SETTING_FILE);
   const initStateFile = String(options['init-state-file'] || DEFAULT_INIT_STATE_FILE);
+  const cdpUrl = String(options['use-cdp'] || process.env.XDCTF_CDP_URL || '');
 
-  const client = new BrowserApiClient({ baseUrl, apiPrefix, tokenFile });
+  const client = new BrowserApiClient({ baseUrl, apiPrefix, tokenFile, cdpUrl });
   await client.open();
   try {
     const settings = readSettings(settingFile);
 
     const authIfNeeded = async () => {
+      const cdpCookieMode = Boolean(cdpUrl);
+      const explicitToken = options.token ? String(options.token) : null;
       if (settings.token) client.saveToken(settings.token);
-      if (!client.token && options.token) client.saveToken(String(options.token));
-      if (!client.token) client.loadTokenFromFile();
-      if (!client.token) {
-        await client.loginWithSetting(settings);
+      if (!client.token && explicitToken) client.saveToken(explicitToken);
+      if (!client.token && cdpCookieMode) await client.loadTokenFromPageStorage();
+      if (!client.token && !cdpCookieMode) client.loadTokenFromFile();
+      if (!client.token && !cdpCookieMode) {
+        await client.loginWithSetting({
+          ...settings,
+          captchaAnswer: options['captcha-answer'] ? String(options['captcha-answer']) : settings.captchaAnswer,
+        });
       }
     };
 
     if (scope === 'auth' && action === 'login') {
       if (settings.token) client.saveToken(settings.token);
       if (!client.token) {
-        await client.loginWithSetting(settings);
+        await client.loginWithSetting({
+          ...settings,
+          captchaAnswer: options['captcha-answer'] ? String(options['captcha-answer']) : settings.captchaAnswer,
+        });
       }
       toJSON({ ok: true, token_file: path.resolve(tokenFile) });
       return;
